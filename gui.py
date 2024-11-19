@@ -1,15 +1,10 @@
-##GUI
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
-
-##Computer Vision
 import cv2
 from ultralytics import YOLO
-
-##Math and DB
 import numpy as np
-import sqlite3 ##더 나은 솔루션으로 변경 예정
+import sqlite3
 
 # YOLO 모델 불러오기
 model = YOLO('best.pt')  # 학습된 모델
@@ -25,14 +20,41 @@ class SmartPotApp:
         self.create_table()
 
         # UI Elements
-        self.btn_select = tk.Button(root, text="이미지 선택", command=self.select_image)
-        self.btn_select.pack(pady=10)
+        self.btn_select_image = tk.Button(root, text="이미지 선택", command=self.select_image)
+        self.btn_select_image.pack(pady=10)
+
+        self.btn_open_camera = tk.Button(root, text="카메라 열기", command=self.open_camera)
+        self.btn_open_camera.pack(pady=10)
 
         self.text_cci = tk.Label(root, text="야호")
         self.text_cci.pack()
 
         self.label = tk.Label(root)
         self.label.pack()
+
+        self.cap = None
+
+    def open_camera(self):
+        if self.cap is None:
+            self.cap = cv2.VideoCapture(cv2.CAP_DSHOW+1)
+        
+        self.show_frame()
+
+    def show_frame(self):
+        if self.cap is not None and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                # Convert the frame to RGB
+                cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(cv2image)
+                img_tk = ImageTk.PhotoImage(image=img_pil)
+                self.label.img_tk = img_tk  # Keep reference
+                self.label.config(image=img_tk)
+
+            # Continue updating the frame
+            self.root.after(10, self.show_frame)
+
+    ## Create WebCam Image Capture Function.
 
     def create_table(self):
         """식물 생장 데이터 저장 table"""
@@ -153,7 +175,7 @@ class SmartPotApp:
         
         return cci
 
-    def calculate_vegetation_index(self, image_path): #식생지수 계산 알고리즘
+    def calculate_vegetation_index(self, image_path):
         # 이미지 읽기
         image = cv2.imread(image_path)
         # 소수점 제한 (오버플로우 방지)
@@ -181,7 +203,6 @@ class SmartPotApp:
         ''', (width, height, cci, result_class))
         self.conn.commit()
 
-    # 피복비율과 식생지수에 따른 추천 시스템
     def recommend_management(self, cci, vegetation_index):
         recommendation = "현재 상태를 유지해주세요"
         if cci > 0.5 or vegetation_index > 0.3:
