@@ -7,7 +7,7 @@ import numpy as np
 import sqlite3
 
 # YOLO 모델 불러오기
-model = YOLO('best.pt')  # 학습된 모델
+model = YOLO('best2.pt')  # 학습된 모델 best.pt
 
 class SmartPotApp:
     def __init__(self, root):
@@ -75,12 +75,21 @@ class SmartPotApp:
     def select_image(self):
         file_path = filedialog.askopenfilename()
         if file_path:
-            # 이미지 로드 및 객체 인식 수행
+            # Load the image
             img = cv2.imread(file_path)
-            results = model(img)
-            annotated_frame = results[0].plot()  # 인식된 객체가 표시된 이미지 얻기
-        
-            # OpenCV 이미지를 PIL 이미지로 변환 후 Tkinter에서 사용
+
+            # Apply Canny edge detection
+            edges = cv2.Canny(img, threshold1=100, threshold2=200)
+
+            # You can choose to overlay edges on the original image or use it directly
+            # For demonstration, let's overlay the edges on the original image
+            img_with_edges = cv2.addWeighted(img, 0.8, cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR), 0.2, 0)
+
+            # Perform object detection using YOLO on the edge-enhanced image
+            results = model(img_with_edges)
+            annotated_frame = results[0].plot()  # Get the image with detected objects displayed
+
+            # Convert OpenCV image to PIL image, then to Tkinter-compatible format
             img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
             img_tk = ImageTk.PhotoImage(img_pil)
             result_class = "Default"
@@ -88,30 +97,31 @@ class SmartPotApp:
             for r in results[0].boxes:
                 result_class = model.names[int(r.cls)]
 
-            # 이미지 레이블에 표시
+            # Display the image in the label
             self.label.config(image=img_tk)
-            self.label.image = img_tk  # 참조 유지
+            self.label.image = img_tk  # Keep reference
 
-            width, height = self.calculate_plant_size(file_path, 100, 5, 200, 'green_mask.png', 28)
+            width, height = self.calculate_plant_size(file_path, 30, 5, 200, 'green_mask.png', 28)
             cci = self.calculate_green_coverage(file_path)
             vegetation_index = self.calculate_vegetation_index(file_path)
 
-            # 결과 출력 및 저장
+            # Output and save results
             if width and height and result_class:
                 print(f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 인식결과: {result_class}, 식생지수: {vegetation_index:.2f}")
                 self.text_cci.config(text=f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 인식결과: {result_class}, 식생지수: {vegetation_index:.2f}")
                 self.store_growth_data(width, height, cci, result_class)
 
-                # 60cm 이상 [케이스 크기 고려하여 이 수치 변경 가능]
+                # Notification for height over 60 cm
                 if height > 60:
                     messagebox.showinfo("Notification", "The plant height is over 60 cm!")
 
-                # 추천 알고리즘
+                # Recommendation algorithm
                 self.recommend_management(cci, vegetation_index)
 
             else:
                 print("식물을 인식하지 못했습니다.")
                 self.text_cci.config(text="식물을 인식하지 못했습니다.")
+
 
     def calculate_plant_size(self, image_path, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
         # 이미지 읽기
