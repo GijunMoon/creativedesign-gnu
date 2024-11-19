@@ -26,7 +26,9 @@ class SmartPotApp:
         self.btn_open_camera = tk.Button(root, text="카메라 열기", command=self.open_camera)
         self.btn_open_camera.pack(pady=10)
 
-        self.text_cci = tk.Label(root, text="야호")
+
+
+        self.text_cci = tk.Label(root, text="이미지를 불러와주세요")
         self.text_cci.pack()
 
         self.label = tk.Label(root)
