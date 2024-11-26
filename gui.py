@@ -17,7 +17,9 @@ plt.rcParams['axes.unicode_minus'] =False
 initial_model = YOLO('best2.pt')  # 해충 / 비해충 구분용 Model
 detailed_model = YOLO('best.pt')  # 해충 세부 종 구분 Model
 
-class SmartPotApp:
+#식물 질병 구분 Model
+
+class SmartPotApp: ##main logic - plant medecine
     def __init__(self, root):
         self.root = root
         self.root.title("Smart Pot")
@@ -117,11 +119,32 @@ class SmartPotApp:
             self.label.config(image=img_tk)
             self.label.image = img_tk  # Keep reference
 
-            # Display results
-            if pest_detected:
-                messagebox.showinfo("Detection Result", f"해충 종: {species}")
+            width, height = self.calculate_plant_size(file_path, 100, 5, 200, 'green_mask.png', 28)
+            cci = self.calculate_green_coverage(file_path)
+            vegetation_index = self.calculate_vegetation_index(file_path)
+
+            # 결과 출력 및 저장
+            if width and height:
+                print(f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
+                self.text_cci.config(text=f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
+                self.store_growth_data(width, height, cci, species)
+
+                # Display results
+                if pest_detected:
+                    messagebox.showinfo("Detection Result", f"해충 종: {species}")
+                else:
+                    messagebox.showinfo("Detection Result", "해충 인식 실패")
+
+                # 60cm 이상 [케이스 크기 고려하여 이 수치 변경 가능]
+                if height > 60:
+                    messagebox.showinfo("Notification", "식물이 화분 보다 클 수 있습니다")
+
+                # 추천 알고리즘
+                self.recommend_management(cci, vegetation_index)
+
             else:
-                messagebox.showinfo("Detection Result", "해충 종 구분 실패")
+                print("식물을 인식하지 못했습니다.")
+                self.text_cci.config(text="식물을 인식하지 못했습니다.")
 
     def resize_image(self, img):
         """Resize image to fit within the maximum display size."""
