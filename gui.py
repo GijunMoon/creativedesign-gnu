@@ -5,17 +5,25 @@ import cv2
 from ultralytics import YOLO
 import numpy as np
 import sqlite3
+from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+#plt font error solve
+plt.rcParams['font.family'] ='Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] =False
 
 # YOLO 모델 불러오기
-model = YOLO('best2.pt')  # 학습된 모델 best.pt
+initial_model = YOLO('best2.pt')  # 해충 / 비해충 구분용 Model
+detailed_model = YOLO('best.pt')  # 해충 세부 종 구분 Model
 
 class SmartPotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Smart Pot")
-        self.root.geometry("800x600")
+        self.root.geometry("1000x800")
 
-        # Create database connection
+        # 식물 생장 DB
         self.conn = sqlite3.connect('plant_growth.db')
         self.create_table()
 
@@ -26,7 +34,8 @@ class SmartPotApp:
         self.btn_open_camera = tk.Button(root, text="카메라 열기", command=self.open_camera)
         self.btn_open_camera.pack(pady=10)
 
-
+        self.btn_predict_water_cycle = tk.Button(root, text="수분 공급 주기 예측", command=self.predict_water_cycle)
+        self.btn_predict_water_cycle.pack(pady=10)
 
         self.text_cci = tk.Label(root, text="이미지를 불러와주세요")
         self.text_cci.pack()
@@ -34,7 +43,15 @@ class SmartPotApp:
         self.label = tk.Label(root)
         self.label.pack()
 
+        self.fig, self.ax = plt.subplots(figsize=(6, 4))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=root)
+        self.canvas.get_tk_widget().pack()
+
         self.cap = None
+
+        # Set maximum display size
+        self.max_display_width = 800
+        self.max_display_height = 600
 
     def open_camera(self):
         if self.cap is None:
@@ -49,14 +66,12 @@ class SmartPotApp:
                 # Convert the frame to RGB
                 cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(cv2image)
-                img_tk = ImageTk.PhotoImage(image=img_pil)
+                img_tk = ImageTk.PhotoImage(image=self.resize_image(img_pil))
                 self.label.img_tk = img_tk  # Keep reference
                 self.label.config(image=img_tk)
 
             # Continue updating the frame
             self.root.after(10, self.show_frame)
-
-    ## Create WebCam Image Capture Function.
 
     def create_table(self):
         """식물 생장 데이터 저장 table"""
@@ -78,49 +93,44 @@ class SmartPotApp:
             # Load the image
             img = cv2.imread(file_path)
 
-            # Apply Canny edge detection
-            edges = cv2.Canny(img, threshold1=100, threshold2=200)
-
-            # You can choose to overlay edges on the original image or use it directly
-            # For demonstration, let's overlay the edges on the original image
-            img_with_edges = cv2.addWeighted(img, 0.8, cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR), 0.2, 0)
-
-            # Perform object detection using YOLO on the edge-enhanced image
-            results = model(img_with_edges)
+            # Initial detection for pests
+            results = initial_model(img)
             annotated_frame = results[0].plot()  # Get the image with detected objects displayed
 
             # Convert OpenCV image to PIL image, then to Tkinter-compatible format
             img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
-            img_tk = ImageTk.PhotoImage(img_pil)
-            result_class = "Default"
+            img_tk = ImageTk.PhotoImage(self.resize_image(img_pil))
+            pest_detected = False
+            species = "Unknown"
 
             for r in results[0].boxes:
-                result_class = model.names[int(r.cls)]
+                object_class = initial_model.names[int(r.cls)]
+                if object_class != None:
+                    pest_detected = True
+                    # Perform species classification
+                    species_results = detailed_model(img)
+                    for sr in species_results[0].boxes:
+                        species = detailed_model.names[int(sr.cls)]
+                    break
 
             # Display the image in the label
             self.label.config(image=img_tk)
             self.label.image = img_tk  # Keep reference
 
-            width, height = self.calculate_plant_size(file_path, 30, 5, 200, 'green_mask.png', 28)
-            cci = self.calculate_green_coverage(file_path)
-            vegetation_index = self.calculate_vegetation_index(file_path)
-
-            # Output and save results
-            if width and height and result_class:
-                print(f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 인식결과: {result_class}, 식생지수: {vegetation_index:.2f}")
-                self.text_cci.config(text=f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 인식결과: {result_class}, 식생지수: {vegetation_index:.2f}")
-                self.store_growth_data(width, height, cci, result_class)
-
-                # Notification for height over 60 cm
-                if height > 60:
-                    messagebox.showinfo("Notification", "The plant height is over 60 cm!")
-
-                # Recommendation algorithm
-                self.recommend_management(cci, vegetation_index)
-
+            # Display results
+            if pest_detected:
+                messagebox.showinfo("Detection Result", f"해충 종: {species}")
             else:
-                print("식물을 인식하지 못했습니다.")
-                self.text_cci.config(text="식물을 인식하지 못했습니다.")
+                messagebox.showinfo("Detection Result", "해충 종 구분 실패")
+
+    def resize_image(self, img):
+        """Resize image to fit within the maximum display size."""
+        width, height = img.size
+        if width > self.max_display_width or height > self.max_display_height:
+            ratio = min(self.max_display_width / width, self.max_display_height / height)
+            new_size = (int(width * ratio), int(height * ratio))
+            return img.resize(new_size, Image.LANCZOS)  # Use Image.LANCZOS for high-quality downsampling
+        return img
 
 
     def calculate_plant_size(self, image_path, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
@@ -224,6 +234,40 @@ class SmartPotApp:
 
         print(f"작물 관리 추천: {recommendation}")
         messagebox.showinfo("Recommendation", recommendation)
+
+    def predict_water_cycle(self):
+        # Step 1: 더미 토양 수분 데이터 생성
+        np.random.seed(0)
+        days = np.arange(1, 31)
+        soil_moisture = np.random.uniform(low=0, high=100, size=30)  # Random soil moisture values
+
+        # Step 2: 데이터 전처리
+        # 수분이 30이하로 떨어지면 수분공급이 필요하다고 간주
+        water_need_days = days[soil_moisture < 30]
+
+        # Step 3: 예측 모델
+        # 수분이 낮은 날을 수분공급이 요구되는 날로 간주
+        X = water_need_days.reshape(-1, 1)
+        y = np.roll(water_need_days, -1)[:-1] - water_need_days[:-1]  # 수분 공급한 날 사이의 기간
+
+        model = LinearRegression()
+        model.fit(X[:-1], y)  # 가장 최신 데이터 추출
+
+        # 수분 공급 주기 예측
+        predicted_cycle = model.predict(X)
+
+        # Step 4: Plot
+        self.ax.clear()
+        self.ax.scatter(days, soil_moisture, label='토양 습도')
+        self.ax.plot(X, model.predict(X), color='red', label='예측된 수분 공급 주기')
+        self.ax.axhline(y=30, color='green', linestyle='--', label='수분 공급 한계점')
+        self.ax.set_xlabel('일')
+        self.ax.set_ylabel('토양 습도')
+        self.ax.set_title('토양 습도 수준에 따른 수분 공급 주기 예측')
+        self.ax.legend()
+        self.canvas.draw()
+        
+        print("수분 공급 주기 예측:", predicted_cycle)
 
 if __name__ == "__main__":
     root = tk.Tk()
