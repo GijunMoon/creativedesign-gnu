@@ -1,4 +1,4 @@
-import tkinter as tk
+import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import cv2
@@ -9,9 +9,9 @@ from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-#plt font error solve
-plt.rcParams['font.family'] ='Malgun Gothic'
-plt.rcParams['axes.unicode_minus'] =False
+# plt font error solve
+plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False
 
 # YOLO 모델 불러오기
 initial_model = YOLO('best2.pt')  # 해충 / 비해충 구분용 Model
@@ -19,42 +19,62 @@ detailed_model = YOLO('best.pt')  # 해충 세부 종 구분 Model
 
 plant_model = YOLO('best4.pt')  # 식물 질병 구분 Model
 
-class SmartPotApp: ##main logic - plant medicine
-    def __init__(self, root):
+class SmartPotUI:
+    def __init__(self, root, logic):
+        self.logic = logic
         self.root = root
         self.root.title("Smart Pot")
-        self.root.geometry("1000x800")
-
-        # 식물 생장 DB
-        self.conn = sqlite3.connect('plant_growth.db')
-        self.add_disease_column_if_not_exists()
-        self.create_table()
+        self.root.geometry("1200x900")
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
 
         # UI Elements
-        self.btn_select_image = tk.Button(root, text="이미지 선택", command=self.select_image)
+        self.frame_left = ctk.CTkFrame(root, width=200, corner_radius=15)
+        self.frame_left.pack(side="left", fill="y", padx=10, pady=10)
+
+        self.btn_select_image = ctk.CTkButton(self.frame_left, text="이미지 선택", command=self.logic.select_image, font=('Nanum Gothic', 12))
         self.btn_select_image.pack(pady=10)
 
-        self.btn_open_camera = tk.Button(root, text="카메라 열기", command=self.open_camera)
+        self.btn_open_camera = ctk.CTkButton(self.frame_left, text="카메라 열기", command=self.logic.open_camera, font=('Nanum Gothic', 12))
         self.btn_open_camera.pack(pady=10)
 
-        self.btn_predict_water_cycle = tk.Button(root, text="수분 공급 주기 예측", command=self.predict_water_cycle)
+        self.btn_predict_water_cycle = ctk.CTkButton(self.frame_left, text="수분 공급 주기 예측", command=self.logic.predict_water_cycle, font=('Nanum Gothic', 12))
         self.btn_predict_water_cycle.pack(pady=10)
 
-        self.text_cci = tk.Label(root, text="이미지를 불러와주세요")
-        self.text_cci.pack()
+        self.text_cci = ctk.CTkLabel(self.frame_left, text="이미지를 불러와주세요", wraplength=150, font=('Nanum Gothic', 12))
+        self.text_cci.pack(pady=20)
 
-        self.label = tk.Label(root)
-        self.label.pack()
+        self.btn_show_chart = ctk.CTkButton(self.frame_left, text="데이터 시각화", command=self.logic.visualize_data, font=('Nanum Gothic', 12))
+        self.btn_show_chart.pack(pady=10)
+
+        self.frame_right = ctk.CTkFrame(root, corner_radius=15)
+        self.frame_right.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+        self.label = ctk.CTkLabel(self.frame_right)
+        self.label.pack(pady=10)
 
         self.fig, self.ax = plt.subplots(figsize=(6, 4))
-        self.canvas = FigureCanvasTkAgg(self.fig, master=root)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.frame_right)
         self.canvas.get_tk_widget().pack()
 
         self.cap = None
-
-        # Set maximum display size
         self.max_display_width = 800
         self.max_display_height = 600
+
+    def update_camera_frame(self, img_tk):
+        self.label.img_tk = img_tk  # Keep reference
+        self.label.configure(image=img_tk)
+
+    def update_text(self, text):
+        self.text_cci.configure(text=text)
+
+class SmartPotLogic:
+    def __init__(self, ui):
+        self.ui = ui
+        self.conn = sqlite3.connect('plant_growth.db')
+        self.add_disease_column_if_not_exists()
+        self.create_table()
+        self.cap = None
 
     def open_camera(self):
         if self.cap is None:
@@ -70,16 +90,12 @@ class SmartPotApp: ##main logic - plant medicine
                 cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(cv2image)
                 img_tk = ImageTk.PhotoImage(image=self.resize_image(img_pil))
-                self.label.img_tk = img_tk  # Keep reference
-                self.label.config(image=img_tk)
+                self.ui.update_camera_frame(img_tk)
 
             # Continue updating the frame
-            self.root.after(10, self.show_frame)
+            self.ui.root.after(10, self.show_frame)
 
     def create_table(self):
-        """
-        식물 생장 데이터 저장 table
-        """
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS growth_data (
@@ -94,9 +110,6 @@ class SmartPotApp: ##main logic - plant medicine
         self.conn.commit()
 
     def add_disease_column_if_not_exists(self):
-        """
-        기존 growth_data 테이블에 disease 컬럼이 없으면 추가
-        """
         cursor = self.conn.cursor()
         try:
             cursor.execute("ALTER TABLE growth_data ADD COLUMN disease TEXT")
@@ -108,14 +121,12 @@ class SmartPotApp: ##main logic - plant medicine
     def select_image(self):
         file_path = filedialog.askopenfilename()
         if file_path:
-            # Load the image
             img = cv2.imread(file_path)
 
             # Initial detection for pests
             results = initial_model(img)
-            annotated_frame = results[0].plot()  # Get the image with detected objects displayed
+            annotated_frame = results[0].plot()
 
-            # Convert OpenCV image to PIL image, then to Tkinter-compatible format
             img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
             img_tk = ImageTk.PhotoImage(self.resize_image(img_pil))
             pest_detected = False
@@ -123,9 +134,8 @@ class SmartPotApp: ##main logic - plant medicine
 
             for r in results[0].boxes:
                 object_class = initial_model.names[int(r.cls)]
-                if object_class != None:
+                if object_class is not None:
                     pest_detected = True
-                    # Perform species classification
                     species_results = detailed_model(img)
                     for sr in species_results[0].boxes:
                         species = detailed_model.names[int(sr.cls)]
@@ -137,54 +147,50 @@ class SmartPotApp: ##main logic - plant medicine
             disease_results = plant_model(img)
             for dr in disease_results[0].boxes:
                 disease_name = plant_model.names[int(dr.cls)]
-                disease_detected = True
-                break
+                if (len(disease_name) > 15):
+                    disease_detected = True
+                    break
 
             # Display the image in the label
-            self.label.config(image=img_tk)
-            self.label.image = img_tk  # Keep reference
+            self.ui.update_camera_frame(img_tk)
 
             width, height = self.calculate_plant_size(file_path, 100, 5, 200, 'green_mask.png', 28)
             cci = self.calculate_green_coverage(file_path)
             vegetation_index = self.calculate_vegetation_index(file_path)
 
-            # 결과 출력 및 저장
             if width and height:
-                print(f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
-                self.text_cci.config(text=f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
+                result_text = f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}"
+                print(result_text)
+                self.ui.update_text(result_text)
                 self.store_growth_data(width, height, cci, species, disease_name)
 
-                # Display results
                 if pest_detected:
                     messagebox.showinfo("Detection Result", f"해충 종: {species}")
                 else:
-                    messagebox.showinfo("Detection Result", "해충 인식 실패")
+                    messagebox.showinfo("Detection Result", "해충 인식되지 않음")
 
                 if disease_detected:
                     messagebox.showinfo("Disease Detection", f"식물 질병: {disease_name}")
                 else:
-                    messagebox.showinfo("Disease Detection", "질병 인식 실패")
+                    messagebox.showinfo("Disease Detection", "질병 인식되지 않음")
 
-                # 60cm 이상 [케이스 크기 고려하여 이 수치 변경 가능]
                 if height > 60:
                     messagebox.showinfo("Notification", "식물이 화분 보다 클 수 있습니다")
 
-                # 추천 알고리즘
                 self.recommend_management(cci, vegetation_index)
 
             else:
                 print("식물을 인식하지 못했습니다.")
-                self.text_cci.config(text="식물을 인식하지 못했습니다.")
+                self.ui.update_text("식물을 인식하지 못했습니다.")
 
     def resize_image(self, img):
-        """Resize image to fit within the maximum display size."""
         width, height = img.size
-        if width > self.max_display_width or height > self.max_display_height:
-            ratio = min(self.max_display_width / width, self.max_display_height / height)
+        if width > self.ui.max_display_width or height > self.ui.max_display_height:
+            ratio = min(self.ui.max_display_width / width, self.ui.max_display_height / height)
             new_size = (int(width * ratio), int(height * ratio))
-            return img.resize(new_size, Image.LANCZOS)  # Use Image.LANCZOS for high-quality downsampling
+            return img.resize(new_size, Image.LANCZOS)
         return img
-
+    
     def calculate_plant_size(self, image_path, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
         # 이미지 읽기
         image = cv2.imread(image_path)
@@ -290,40 +296,51 @@ class SmartPotApp: ##main logic - plant medicine
         messagebox.showinfo("Recommendation", recommendation)
 
     def predict_water_cycle(self):
-        # Step 1: 더미 토양 수분 데이터 생성
         np.random.seed(0)
         days = np.arange(1, 31)
         soil_moisture = np.random.uniform(low=0, high=100, size=30)  # Random soil moisture values
 
-        # Step 2: 데이터 전처리
-        # 수분이 30이하로 떨어지면 수분공급이 필요하다고 간주
         water_need_days = days[soil_moisture < 30]
-
-        # Step 3: 예측 모델
-        # 수분이 낮은 날을 수분공급이 요구되는 날로 간주
         X = water_need_days.reshape(-1, 1)
-        y = np.roll(water_need_days, -1)[:-1] - water_need_days[:-1]  # 수분 공급한 날 사이의 기간
+        y = np.roll(water_need_days, -1)[:-1] - water_need_days[:-1]
 
         model = LinearRegression()
-        model.fit(X[:-1], y)  # 가장 최신 데이터 추출
-
-        # 수분 공급 주기 예측
+        model.fit(X[:-1], y)
         predicted_cycle = model.predict(X)
 
-        # Step 4: Plot
-        self.ax.clear()
-        self.ax.scatter(days, soil_moisture, label='토양 습도')
-        self.ax.plot(X, model.predict(X), color='red', label='예측된 수분 공급 주기')
-        self.ax.axhline(y=30, color='green', linestyle='--', label='수분 공급 한계점')
-        self.ax.set_xlabel('일')
-        self.ax.set_ylabel('토양 습도')
-        self.ax.set_title('토양 습도 수준에 따른 수분 공급 주기 예측')
-        self.ax.legend()
-        self.canvas.draw()
-        
+        self.ui.ax.clear()
+        self.ui.ax.scatter(days, soil_moisture, label='토양 습도')
+        self.ui.ax.plot(X, model.predict(X), color='red', label='예측된 수분 공급 주기')
+        self.ui.ax.axhline(y=30, color='green', linestyle='--', label='수분 공급 한계점')
+        self.ui.ax.set_xlabel('일')
+        self.ui.ax.set_ylabel('토양 습도')
+        self.ui.ax.set_title('토양 습도 수준에 따른 수분 공급 주기 예측')
+        self.ui.ax.legend()
+        self.ui.canvas.draw()
+
         print("수분 공급 주기 예측:", predicted_cycle)
 
+    def visualize_data(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT width, height, cci FROM growth_data")
+        data = cursor.fetchall()
+        if data:
+            widths, heights, ccis = zip(*data)
+            self.ui.ax.clear()
+            self.ui.ax.plot(widths, label='너비 (cm)', color='blue')
+            self.ui.ax.plot(heights, label='높이 (cm)', color='red')
+            self.ui.ax.plot(ccis, label='피복비율', color='green')
+            self.ui.ax.set_title('식물 성장 데이터 시각화')
+            self.ui.ax.set_xlabel('데이터 포인트')
+            self.ui.ax.set_ylabel('값')
+            self.ui.ax.legend()
+            self.ui.canvas.draw()
+        else:
+            messagebox.showinfo("데이터 없음", "저장된 성장 데이터가 없습니다.")
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SmartPotApp(root)
+    root = ctk.CTk()
+    logic = SmartPotLogic(None)
+    app = SmartPotUI(root, logic)
+    logic.ui = app
     root.mainloop()
