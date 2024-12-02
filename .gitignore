@@ -42,3 +42,7 @@ legacy/test3.py
 학습/val_batch0_labels_98_b4c50220fa7f8243ecc6.jpg
 학습/val_batch0_pred_98_a4adeec373febca7f06d.jpg
 학습/제목 없음.png
+best3.pt
+best4.pt
+YOLOv8_seg_large_segmentation.ipynb
+yolov8l-seg.pt

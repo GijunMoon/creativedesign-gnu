@@ -17,9 +17,9 @@ plt.rcParams['axes.unicode_minus'] =False
 initial_model = YOLO('best2.pt')  # 해충 / 비해충 구분용 Model
 detailed_model = YOLO('best.pt')  # 해충 세부 종 구분 Model
 
-#식물 질병 구분 Model
+plant_model = YOLO('best4.pt')  # 식물 질병 구분 Model
 
-class SmartPotApp: ##main logic - plant medecine
+class SmartPotApp: ##main logic - plant medicine
     def __init__(self, root):
         self.root = root
         self.root.title("Smart Pot")
@@ -27,6 +27,7 @@ class SmartPotApp: ##main logic - plant medecine
 
         # 식물 생장 DB
         self.conn = sqlite3.connect('plant_growth.db')
+        self.add_disease_column_if_not_exists()
         self.create_table()
 
         # UI Elements
@@ -76,7 +77,9 @@ class SmartPotApp: ##main logic - plant medecine
             self.root.after(10, self.show_frame)
 
     def create_table(self):
-        """식물 생장 데이터 저장 table"""
+        """
+        식물 생장 데이터 저장 table
+        """
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS growth_data (
@@ -84,9 +87,22 @@ class SmartPotApp: ##main logic - plant medecine
                 width REAL,
                 height REAL,
                 cci REAL,
-                result_class TEXT
+                result_class TEXT,
+                disease TEXT
             )
         ''')
+        self.conn.commit()
+
+    def add_disease_column_if_not_exists(self):
+        """
+        기존 growth_data 테이블에 disease 컬럼이 없으면 추가
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE growth_data ADD COLUMN disease TEXT")
+        except sqlite3.OperationalError:
+            # 컬럼이 이미 존재하는 경우 예외 발생, 무시함
+            pass
         self.conn.commit()
 
     def select_image(self):
@@ -115,6 +131,15 @@ class SmartPotApp: ##main logic - plant medecine
                         species = detailed_model.names[int(sr.cls)]
                     break
 
+            # Plant disease detection
+            disease_detected = False
+            disease_name = "None"
+            disease_results = plant_model(img)
+            for dr in disease_results[0].boxes:
+                disease_name = plant_model.names[int(dr.cls)]
+                disease_detected = True
+                break
+
             # Display the image in the label
             self.label.config(image=img_tk)
             self.label.image = img_tk  # Keep reference
@@ -127,13 +152,18 @@ class SmartPotApp: ##main logic - plant medecine
             if width and height:
                 print(f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
                 self.text_cci.config(text=f"식물의 너비: {width:.2f} cm, 높이: {height:.2f} cm, 피복비율: {cci:.2f}, 식생지수: {vegetation_index:.2f}")
-                self.store_growth_data(width, height, cci, species)
+                self.store_growth_data(width, height, cci, species, disease_name)
 
                 # Display results
                 if pest_detected:
                     messagebox.showinfo("Detection Result", f"해충 종: {species}")
                 else:
                     messagebox.showinfo("Detection Result", "해충 인식 실패")
+
+                if disease_detected:
+                    messagebox.showinfo("Disease Detection", f"식물 질병: {disease_name}")
+                else:
+                    messagebox.showinfo("Disease Detection", "질병 인식 실패")
 
                 # 60cm 이상 [케이스 크기 고려하여 이 수치 변경 가능]
                 if height > 60:
@@ -154,7 +184,6 @@ class SmartPotApp: ##main logic - plant medecine
             new_size = (int(width * ratio), int(height * ratio))
             return img.resize(new_size, Image.LANCZOS)  # Use Image.LANCZOS for high-quality downsampling
         return img
-
 
     def calculate_plant_size(self, image_path, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
         # 이미지 읽기
@@ -239,13 +268,15 @@ class SmartPotApp: ##main logic - plant medecine
 
         return vegetation_index
 
-    def store_growth_data(self, width, height, cci, result_class):
-        """식물 성장 데이터 저장"""
+    def store_growth_data(self, width, height, cci, result_class, disease):
+        """
+        식물 성장 데이터 저장
+        """
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO growth_data (width, height, cci, result_class)
-            VALUES (?, ?, ?, ?)
-        ''', (width, height, cci, result_class))
+            INSERT INTO growth_data (width, height, cci, result_class, disease)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (width, height, cci, result_class, disease))
         self.conn.commit()
 
     def recommend_management(self, cci, vegetation_index):
