@@ -46,3 +46,6 @@ best3.pt
 best4.pt
 YOLOv8_seg_large_segmentation.ipynb
 yolov8l-seg.pt
+insect_conf_model.pt
+insect_spec_model.pt
+plant_doc_model.pt
