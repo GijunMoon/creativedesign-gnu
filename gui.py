@@ -135,11 +135,12 @@ class SmartPotLogic:
             for r in results[0].boxes:
                 object_class = initial_model.names[int(r.cls)]
                 if object_class is not None:
-                    pest_detected = True
-                    species_results = detailed_model(img)
-                    for sr in species_results[0].boxes:
-                        species = detailed_model.names[int(sr.cls)]
-                    break
+                    if r.conf >= 0.6: # confidence score 0.6 이상이 아닌경우 인식 결과 제외
+                        pest_detected = True
+                        species_results = detailed_model(img)
+                        for sr in species_results[0].boxes:
+                            species = detailed_model.names[int(sr.cls)]
+                        break
 
             # Plant disease detection
             disease_detected = False
