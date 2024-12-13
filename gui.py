@@ -13,6 +13,7 @@ import time
 import random
 import tkinter as tk  # Import standard tkinter
 import logging
+import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -131,6 +132,15 @@ class SmartFarmUI:
             self.frame_left, text="물탱크 잔량: N/A", font=('Nanum Gothic', 14))
         self.label_water_level.pack(pady=8)
 
+        # **New Labels for Temperature and Humidity**
+        self.label_temperature = ctk.CTkLabel(
+            self.frame_left, text="온도: N/A", font=('Nanum Gothic', 14))
+        self.label_temperature.pack(pady=8)
+
+        self.label_humidity = ctk.CTkLabel(
+            self.frame_left, text="습도: N/A", font=('Nanum Gothic', 14))
+        self.label_humidity.pack(pady=8)
+
         # 하드웨어 제어
         self.label_control_title = ctk.CTkLabel(
             self.frame_left, text="하드웨어 제어", font=('Nanum Gothic', 16))
@@ -155,6 +165,15 @@ class SmartFarmUI:
 
         self.scrollable_frame = ScrollableFrame(self.frame_right)
         self.scrollable_frame.pack(fill="both", expand=True)
+
+        # **Add "Refresh All Data" Button at the Top Right**
+        self.btn_refresh_all = ctk.CTkButton(
+            self.scrollable_frame.scrollable_frame,
+            text="데이터 최신화",
+            command=self.logic.visualize_and_predict,
+            font=('Nanum Gothic', 14)
+        )
+        self.btn_refresh_all.pack(pady=10)
 
         # 상단: 카메라 및 이미지 표시
         self.frame_image = ctk.CTkFrame(self.scrollable_frame.scrollable_frame, corner_radius=10, fg_color="black")
@@ -193,11 +212,17 @@ class SmartFarmUI:
         self.label_image.img_tk = img_tk  # Keep reference
         self.label_image.configure(image=img_tk)
 
-    def update_environment_info(self, light, co2, ph, water_level):
+    def update_environment_info(self, light, co2, ph, water_level, temperature=None, humidity=None):
         self.label_light.configure(text=f"조도: {light} lux")
         self.label_co2.configure(text=f"CO₂ 농도: {co2} ppm")
         self.label_ph.configure(text=f"pH 농도: {ph}")
         self.label_water_level.configure(text=f"물탱크 잔량: {water_level}%")
+        
+        # **Update Temperature and Humidity if Provided**
+        if temperature is not None:
+            self.label_temperature.configure(text=f"온도: {temperature}°C")
+        if humidity is not None:
+            self.label_humidity.configure(text=f"습도: {humidity}%")
 
     def update_status(self, status):
         self.label_status.configure(text=f"상태: {status}")
@@ -210,13 +235,14 @@ class SmartFarmUI:
 class SmartFarmLogic:
     def __init__(self, ui=None):
         self.ui = ui
-        self.conn = sqlite3.connect('plant_growth.db')
+        self.conn = sqlite3.connect('plant_growth.db', check_same_thread=False)  # Allow access from multiple threads
         self.cap = None
         self.current_frame = None  # 현재 프레임 저장용 변수
         self.arduino = None
         self.dummy_data_thread = None
         self.reading_thread = None
         self.create_table()
+        self.is_predicting = False  # Flag to prevent multiple predictions at the same time
 
     def ensure_columns_exist(self, cursor, table_name, required_columns):
         cursor.execute(f"PRAGMA table_info({table_name})")
@@ -266,6 +292,46 @@ class SmartFarmLogic:
             self.dummy_data_thread = threading.Thread(target=self.generate_dummy_data, daemon=True)
             self.dummy_data_thread.start()
 
+        # Start automatic visualization and prediction
+        self.schedule_visualize_and_predict()
+
+    def schedule_visualize_and_predict(self):
+        """
+        Schedule the visualize_and_predict method to run every 60 seconds.
+        """
+        self.visualize_and_predict()
+        # Schedule the next call in 60,000 milliseconds (60 seconds)
+        self.ui.root.after(60000, self.schedule_visualize_and_predict)
+
+    def visualize_and_predict(self):
+        """
+        Perform data visualization and, if sufficient data is available, perform water cycle prediction.
+        """
+        try:
+            self.visualize_data()
+            # Check if enough data is accumulated for prediction (e.g., 30 data points)
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM growth_data WHERE timestamp >= datetime('now', '-30 minutes')")
+            count = cursor.fetchone()[0]
+            logging.debug(f"Data points in the last 30 minutes: {count}")
+            if count >= 30 and not self.is_predicting:
+                self.is_predicting = True
+                threading.Thread(target=self.perform_prediction, daemon=True).start()
+        except Exception as e:
+            logging.error(f"Error in visualize_and_predict: {e}")
+
+    def perform_prediction(self):
+        """
+        Perform water cycle prediction and act upon the result.
+        """
+        try:
+            self.predict_water_cycle()
+            # After prediction, reset the flag
+        except Exception as e:
+            logging.error(f"Error in perform_prediction: {e}")
+        finally:
+            self.is_predicting = False
+
     def generate_dummy_data(self):
         while True:
             # Generate random dummy data
@@ -273,10 +339,19 @@ class SmartFarmLogic:
             co2 = random.randint(300, 800)     # ppm
             ph = round(random.uniform(5.5, 7.5), 2)
             water_level = random.randint(0, 100)  # percentage
+            temperature = round(random.uniform(15.0, 30.0), 2)  # °C
+            humidity = random.randint(30, 90)  # %
 
             # Update the UI with dummy data if ui is set
             if self.ui:
-                self.ui.update_environment_info(light, co2, ph, water_level)
+                self.ui.update_environment_info(
+                    light=light,
+                    co2=co2,
+                    ph=ph,
+                    water_level=water_level,
+                    temperature=temperature,
+                    humidity=humidity
+                )
             time.sleep(5)  # Update every 5 seconds
 
     def read_from_arduino(self):
@@ -285,14 +360,30 @@ class SmartFarmLogic:
                 try:
                     line = self.arduino.readline().decode().strip()
                     if line:
-                        # Expected data format: "LIGHT:100,CO2:400,PH:6.5,WATER:80"
-                        data = dict(item.split(":") for item in line.split(","))
-                        light = data.get("LIGHT", "N/A")
-                        co2 = data.get("CO2", "N/A")
-                        ph = data.get("PH", "N/A")
-                        water_level = data.get("WATER", "N/A")
-                        if self.ui:
-                            self.ui.update_environment_info(light, co2, ph, water_level)
+                        # Expected data format: "조도,수위,토양습도,이산화탄소,PH,온도,습도"
+                        data = line.split(",")
+                        if len(data) == 7:
+                            light = float(data[0])  # 조도
+                            water_level = float(data[1])  # 수위
+                            soil_humidity = float(data[2])  # 토양습도
+                            co2 = float(data[3])  # 이산화탄소
+                            ph = float(data[4])  # PH
+                            temperature = float(data[5])  # 온도
+                            humidity = float(data[6])  # 습도
+
+                            if self.ui:
+                                self.ui.update_environment_info(
+                                    light=light,
+                                    co2=co2,
+                                    ph=ph,
+                                    water_level=water_level,
+                                    temperature=temperature,
+                                    humidity=humidity
+                                )
+                            # Store the data in the database
+                            self.store_growth_data_from_sensors(soil_humidity)
+                        else:
+                            logging.warning(f"Unexpected data format: {line}")
                 except Exception as e:
                     logging.error(f"데이터 파싱 오류: {e}")
             time.sleep(1)  # Data reading interval
@@ -302,7 +393,11 @@ class SmartFarmLogic:
             # Attempt to open the default camera (index 0)
             self.cap = cv2.VideoCapture(1)  # 웹캠 인덱스 1
             if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(1)  # 다른 인덱스로 시도
+                self.cap = cv2.VideoCapture(0)  # Fallback to index 0
+                if not self.cap.isOpened():
+                    messagebox.showerror("카메라 오류", "웹캠을 열 수 없습니다.")
+                    logging.error("Failed to open the camera.")
+                    return
         self.show_frame()
 
     def show_frame(self):
@@ -429,7 +524,6 @@ class SmartFarmLogic:
                     messagebox.showinfo("Notification", "식물이 화분 보다 클 수 있습니다")
 
                 self.recommend_management(cci, vegetation_index)
-
             except Exception as e:
                 messagebox.showerror("오류", f"이미지 처리 중 오류가 발생했습니다: {e}")
                 logging.error(f"Error in capture_image: {e}")
@@ -607,6 +701,26 @@ class SmartFarmLogic:
         ''', (width, height, cci, vegetation_index, result_class, disease))
         self.conn.commit()
 
+    def store_growth_data_from_sensors(self, cci):
+        """
+        Store soil moisture (cci) data from sensors.
+        This method is called when data is received from Arduino or dummy data.
+        """
+        try:
+            cci = float(cci)
+        except ValueError as e:
+            logging.error(f"CCI data conversion error: {e}")
+            return
+
+        logging.debug(f"Inserting sensor data: cci={cci}")
+
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO growth_data (cci)
+            VALUES (?)
+        ''', (cci,))
+        self.conn.commit()
+
     def recommend_management(self, cci, vegetation_index):
         recommendation = "현재 상태를 유지해주세요"
         if cci > 0.5 or vegetation_index > 0.3:
@@ -615,67 +729,99 @@ class SmartFarmLogic:
             recommendation = "수분 및 영양 공급을 점검해주세요"
 
         print(f"작물 관리 추천: {recommendation}")
+        self.ui.update_status(f"작물 관리 추천: {recommendation}")
         messagebox.showinfo("Recommendation", recommendation)
 
     def predict_water_cycle(self):
         try:
-            np.random.seed(0)
-            days = np.arange(1, 31)
-            soil_moisture = np.random.uniform(low=0, high=100, size=30)  # Random soil moisture values
-
-            water_need_days = days[soil_moisture < 30]
-            if len(water_need_days) < 2:
-                messagebox.showinfo("예측 불가", "수분 공급 필요일이 충분하지 않습니다.")
+            cursor = self.conn.cursor()
+            # Retrieve soil moisture data from the last 30 minutes
+            cursor.execute("""
+                SELECT timestamp, cci FROM growth_data 
+                WHERE timestamp >= datetime('now', '-30 minutes') 
+                ORDER BY timestamp ASC
+            """)
+            data = cursor.fetchall()
+            if len(data) < 2:
+                logging.info("Not enough data for prediction.")
                 return
 
-            X = water_need_days.reshape(-1, 1)
-            y = np.roll(water_need_days, -1)[:-1] - water_need_days[:-1]
+            # Extract time (in minutes) and soil moisture (cci)
+            times = []
+            soil_moisture = []
+            for row in data:
+                timestamp, cci = row
+                # Calculate minutes since the first timestamp
+                first_time = data[0][0]
+                current_time = row[0]
+                time_diff = datetime.datetime.strptime(current_time, '%Y-%m-%d %H:%M:%S') - datetime.datetime.strptime(first_time, '%Y-%m-%d %H:%M:%S')
+                minutes = time_diff.total_seconds() / 60
+                times.append(minutes)
+                soil_moisture.append(cci)
 
+            # Convert to numpy arrays
+            X = np.array(times).reshape(-1, 1)
+            y = np.array(soil_moisture)
+
+            # Fit Linear Regression model
             model = LinearRegression()
-            model.fit(X[:-1], y)
-            predicted_cycle = model.predict(X)
+            model.fit(X, y)
+            predicted = model.predict(X)
 
-            self.ui.fig.clf()  # Clear the entire figure
+            # Predict the next minute's soil moisture
+            next_minute = np.array([[X[-1][0] + 1]])
+            predicted_next = model.predict(next_minute)[0]
 
-            # Create a GridSpec layout
+            logging.debug(f"Predicted next soil moisture (cci): {predicted_next}")
+
+            # Update the visualization with prediction
+            self.ui.fig.clf()  # Clear the figure
+
+            # Create a GridSpec layout with 2 rows and 2 columns
             gs = self.ui.fig.add_gridspec(2, 2)
 
             # 토양 습도 라인 차트
             ax1 = self.ui.fig.add_subplot(gs[0, 0], facecolor='black')
-            ax1.plot(days, soil_moisture, label='토양 습도', color='cyan')
-            ax1.axhline(y=30, color='green', linestyle='--', label='수분 공급 한계점')
-            ax1.set_xlabel('일', color='white')
-            ax1.set_ylabel('토양 습도', color='white')
-            ax1.set_title('토양 습도 수준', color='white')
+            ax1.plot(times, soil_moisture, label='토양 습도', color='cyan')
+            ax1.plot(times, predicted, label='예측 토양 습도', color='orange', linestyle='--')
+            ax1.set_xlabel('시간 (분)', color='white')
+            ax1.set_ylabel('토양 습도 (CCI)', color='white')
+            ax1.set_title('토양 습도 변화 추이', color='white')
             ax1.legend()
 
-            # 수분 공급 주기 예측 라인 차트
+            # 수분 공급 주기 예측 결과
             ax2 = self.ui.fig.add_subplot(gs[0, 1], facecolor='black')
-            ax2.scatter(water_need_days, soil_moisture[soil_moisture < 30], label='수분 공급 필요일', color='red')
-            ax2.plot(water_need_days, predicted_cycle, color='orange', label='예측된 주기')
-            ax2.set_xlabel('일', color='white')
-            ax2.set_ylabel('수분 공급 주기', color='white')
-            ax2.set_title('수분 공급 주기 예측', color='white')
-            ax2.legend()
+            ax2.text(0.5, 0.5, f"예측된 다음 수분 공급 CCI: {predicted_next:.2f}", 
+                     horizontalalignment='center', verticalalignment='center',
+                     fontsize=14, color='white', transform=ax2.transAxes)
+            ax2.axis('off')  # Hide the axes
 
             # 토양 습도 히스토그램
             ax3 = self.ui.fig.add_subplot(gs[1, 0], facecolor='black')
             ax3.hist(soil_moisture, bins=10, color='purple', alpha=0.7)
-            ax3.set_xlabel('토양 습도', color='white')
+            ax3.set_xlabel('토양 습도 (CCI)', color='white')
             ax3.set_ylabel('빈도수', color='white')
             ax3.set_title('토양 습도 분포', color='white')
 
             # 식생지수 바 차트
             ax4 = self.ui.fig.add_subplot(gs[1, 1], facecolor='black')
-            ax4.bar(['식생지수'], [self.calculate_vegetation_index_from_cycle(soil_moisture)], color='green')
+            avg_vegetation = self.calculate_vegetation_index_from_cycle(soil_moisture)
+            ax4.bar(['식생지수'], [avg_vegetation], color='green')
             ax4.set_ylabel('식생지수', color='white')
-            ax4.set_title('식생지수', color='white')
+            ax4.set_title('평균 식생지수', color='white')
 
-            self.fig.tight_layout()
-            self.canvas.draw()
+            self.ui.fig.tight_layout()
+            self.ui.canvas.draw()
 
-            print("수분 공급 주기 예측:", predicted_cycle)
-            logging.debug(f"Predicted water cycle: {predicted_cycle}")
+            # Display the prediction result in the UI
+            self.ui.update_status(f"수분 공급 주기 예측: CCI={predicted_next:.2f}")
+
+            # If predicted soil moisture is below threshold, activate pump
+            if predicted_next < 0.3:  # Example threshold
+                self.toggle_pump()
+                messagebox.showinfo("수분 공급", "수분 공급 주기가 도래했습니다. 급수 펌프를 작동시켰습니다.")
+                logging.info("Pump activated based on water cycle prediction.")
+
         except Exception as e:
             messagebox.showerror("예측 오류", f"수분 공급 주기 예측 중 오류가 발생했습니다: {e}")
             logging.error(f"Error in predict_water_cycle: {e}")
@@ -685,6 +831,9 @@ class SmartFarmLogic:
         return np.mean(soil_moisture) / 100
 
     def visualize_data(self):
+        """
+        Visualize the collected growth data.
+        """
         try:
             cursor = self.conn.cursor()
             cursor.execute("SELECT width, height, cci, vegetation_index FROM growth_data")
@@ -718,7 +867,7 @@ class SmartFarmLogic:
 
                 self.ui.fig.clf()  # Clear the entire figure
 
-                # Create a GridSpec layout
+                # Create a GridSpec layout with 2 rows and 2 columns
                 gs = self.ui.fig.add_gridspec(2, 2)
 
                 try:
@@ -781,7 +930,7 @@ class SmartFarmLogic:
             logging.info("Sent 'PUMP' command to Arduino.")
         else:
             # Dummy action
-            messagebox.showinfo("급수 펌프", "급수 펌프 토글 (더미 데이터)")
+            self.ui.update_status("급수 펌프 작동 (더미 데이터)")
             logging.info("Toggled pump (dummy data).")
 
     def toggle_led(self):
@@ -791,7 +940,7 @@ class SmartFarmLogic:
             logging.info("Sent 'LED' command to Arduino.")
         else:
             # Dummy action
-            messagebox.showinfo("LED 조명", "LED 조명 토글 (더미 데이터)")
+            self.ui.update_status("LED 조명 토글 (더미 데이터)")
             logging.info("Toggled LED (dummy data).")
 
     def send_command_to_arduino(self, command):
