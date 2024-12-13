@@ -97,6 +97,11 @@ class SmartFarmUI:
             self.frame_left, text="카메라 열기", command=self.logic.open_camera, font=('Nanum Gothic', 14))
         self.btn_open_camera.pack(pady=15)
 
+        # 사진 촬영 버튼 추가
+        self.btn_capture_image = ctk.CTkButton(
+            self.frame_left, text="사진 촬영", command=self.logic.capture_image, font=('Nanum Gothic', 14))
+        self.btn_capture_image.pack(pady=15)
+
         self.btn_predict_water_cycle = ctk.CTkButton(
             self.frame_left, text="수분 공급 주기 예측", command=self.logic.predict_water_cycle, font=('Nanum Gothic', 14))
         self.btn_predict_water_cycle.pack(pady=15)
@@ -207,6 +212,7 @@ class SmartFarmLogic:
         self.ui = ui
         self.conn = sqlite3.connect('plant_growth.db')
         self.cap = None
+        self.current_frame = None  # 현재 프레임 저장용 변수
         self.arduino = None
         self.dummy_data_thread = None
         self.reading_thread = None
@@ -294,13 +300,16 @@ class SmartFarmLogic:
     def open_camera(self):
         if self.cap is None:
             # Attempt to open the default camera (index 0)
-            self.cap = cv2.VideoCapture(0)
+            self.cap = cv2.VideoCapture(1)  # 웹캠 인덱스 1
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(1)  # 다른 인덱스로 시도
         self.show_frame()
 
     def show_frame(self):
         if self.cap is not None and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
+                self.current_frame = frame.copy()  # 현재 프레임 저장
                 # Convert the frame to RGB
                 cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(cv2image)
@@ -319,78 +328,39 @@ class SmartFarmLogic:
                     logging.error(f"Failed to load image: {file_path}")
                     return
 
-                # Initial detection for pests
-                results = initial_model(img)
-                annotated_frame = results[0].plot()
-
-                img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
-                img_tk = ImageTk.PhotoImage(self.resize_image(img_pil))
-                pest_detected = False
-                species = "Unknown"
-
-                for r in results[0].boxes:
-                    object_class = initial_model.names[int(r.cls)]
-                    if object_class is not None:
-                        if r.conf >= 0.55:  # confidence score 0.55 이상인 경우
-                            pest_detected = True
-                            species_results = detailed_model(img)
-                            for sr in species_results[0].boxes:
-                                species = detailed_model.names[int(sr.cls)]
-                            break
-
-                # Plant disease detection
-                disease_detected = False
-                disease_name = "None"
-                disease_results = plant_model(img)
-                for dr in disease_results[0].boxes:
-                    disease_name = plant_model.names[int(dr.cls)]
-                    if len(disease_name) > 15:
-                        disease_detected = True
-                        break
-
-                # Display the image in the label
-                self.ui.update_camera_frame(img_tk)
-                logging.debug("Updated camera frame on UI.")
-
-                width, height = self.calculate_plant_size(file_path, 100, 5, 200, 'green_mask.png', 28)
-                cci = self.calculate_green_coverage(file_path)
-                vegetation_index = self.calculate_vegetation_index(file_path)
-
-                if width is None or height is None or cci is None or vegetation_index is None:
+                analysis_results = self.analyze_image(img)
+                if analysis_results is None:
                     messagebox.showerror("데이터 오류", "식물 크기 계산에 실패했습니다.")
                     self.ui.update_analysis_results("인식되지 않음", "인식되지 않음", "인식되지 않음")
-                    logging.error("Failed to calculate plant size.")
+                    logging.error("Failed to analyze image.")
                     return
 
-                try:
-                    width = float(width)
-                    height = float(height)
-                    cci = float(cci)
-                    vegetation_index = float(vegetation_index)
-                except ValueError as e:
-                    messagebox.showerror("데이터 오류", f"데이터 변환 오류: {e}")
-                    logging.error(f"Data conversion error: {e}")
-                    return
+                width, height, cci, vegetation_index, species, disease_name = analysis_results
+
+                annotated_frame = initial_model(img)[0].plot()
+                img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
+                img_tk = ImageTk.PhotoImage(self.resize_image(img_pil))
 
                 # Define size_text before passing
                 size_text = f"너비: {width:.2f} cm, 높이: {height:.2f} cm"
 
-                # Proceed to store data and update UI
+                # Update UI
+                self.ui.update_camera_frame(img_tk)
                 self.ui.update_analysis_results(
-                    species if pest_detected else "인식되지 않음",
-                    disease_name if disease_detected else "인식되지 않음",
-                    size_text  # Pass 'size_text' here
+                    species if species != "Unknown" else "인식되지 않음",
+                    disease_name if disease_name != "None" else "인식되지 않음",
+                    size_text
                 )
                 logging.debug(f"Updated analysis results: pest={species}, disease={disease_name}, size_text={size_text}")
 
                 self.store_growth_data(width, height, cci, vegetation_index, species, disease_name)
 
-                if pest_detected:
+                if species != "Unknown":
                     messagebox.showinfo("Detection Result", f"해충 종: {species}")
                 else:
                     messagebox.showinfo("Detection Result", "해충 인식되지 않음")
 
-                if disease_detected:
+                if disease_name != "None":
                     messagebox.showinfo("Disease Detection", f"식물 질병: {disease_name}")
                 else:
                     messagebox.showinfo("Disease Detection", "질병 인식되지 않음")
@@ -407,6 +377,108 @@ class SmartFarmLogic:
             messagebox.showerror("오류", f"이미지 처리 중 오류가 발생했습니다: {e}")
             logging.error(f"Error in select_image: {e}")
 
+    def capture_image(self):
+        if self.cap is not None and self.cap.isOpened():
+            if self.current_frame is None:
+                messagebox.showerror("캡처 오류", "현재 프레임이 없습니다.")
+                logging.error("No current frame available for capture.")
+                return
+
+            try:
+                frame = self.current_frame.copy()
+                img = frame
+
+                analysis_results = self.analyze_image(img)
+                if analysis_results is None:
+                    messagebox.showerror("데이터 오류", "식물 크기 계산에 실패했습니다.")
+                    self.ui.update_analysis_results("인식되지 않음", "인식되지 않음", "인식되지 않음")
+                    logging.error("Failed to analyze captured image.")
+                    return
+
+                width, height, cci, vegetation_index, species, disease_name = analysis_results
+
+                annotated_frame = initial_model(img)[0].plot()
+                img_pil = Image.fromarray(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB))
+                img_tk = ImageTk.PhotoImage(self.resize_image(img_pil))
+
+                # Define size_text before passing
+                size_text = f"너비: {width:.2f} cm, 높이: {height:.2f} cm"
+
+                # Update UI
+                self.ui.update_camera_frame(img_tk)
+                self.ui.update_analysis_results(
+                    species if species != "Unknown" else "인식되지 않음",
+                    disease_name if disease_name != "None" else "인식되지 않음",
+                    size_text
+                )
+                logging.debug(f"Updated analysis results: pest={species}, disease={disease_name}, size_text={size_text}")
+
+                self.store_growth_data(width, height, cci, vegetation_index, species, disease_name)
+
+                if species != "Unknown":
+                    messagebox.showinfo("Detection Result", f"해충 종: {species}")
+                else:
+                    messagebox.showinfo("Detection Result", "해충 인식되지 않음")
+
+                if disease_name != "None":
+                    messagebox.showinfo("Disease Detection", f"식물 질병: {disease_name}")
+                else:
+                    messagebox.showinfo("Disease Detection", "질병 인식되지 않음")
+
+                if height > 60:
+                    messagebox.showinfo("Notification", "식물이 화분 보다 클 수 있습니다")
+
+                self.recommend_management(cci, vegetation_index)
+
+            except Exception as e:
+                messagebox.showerror("오류", f"이미지 처리 중 오류가 발생했습니다: {e}")
+                logging.error(f"Error in capture_image: {e}")
+        else:
+            messagebox.showerror("카메라 오류", "카메라가 열려 있지 않습니다.")
+
+    def analyze_image(self, img):
+        try:
+            # Initial detection for pests
+            results = initial_model(img)
+            annotated_frame = results[0].plot()
+
+            pest_detected = False
+            species = "Unknown"
+
+            for r in results[0].boxes:
+                object_class = initial_model.names[int(r.cls)]
+                if object_class is not None:
+                    if r.conf >= 0.55:  # confidence score 0.55 이상인 경우
+                        pest_detected = True
+                        species_results = detailed_model(img)
+                        for sr in species_results[0].boxes:
+                            species = detailed_model.names[int(sr.cls)]
+                        break
+
+            # Plant disease detection
+            disease_detected = False
+            disease_name = "None"
+            disease_results = plant_model(img)
+            for dr in disease_results[0].boxes:
+                disease_name = plant_model.names[int(dr.cls)]
+                if len(disease_name) > 15:
+                    disease_detected = True
+                    break
+
+            # 크기 및 식생지수 계산
+            width, height = self.calculate_plant_size_from_image(img, 100, 5, 200, 'green_mask.png', 28)
+            cci = self.calculate_green_coverage_from_image(img)
+            vegetation_index = self.calculate_vegetation_index_from_image(img)
+
+            if width is None or height is None or cci is None or vegetation_index is None:
+                return None
+
+            return width, height, cci, vegetation_index, species, disease_name
+
+        except Exception as e:
+            logging.error(f"Image analysis error: {e}")
+            return None
+
     def resize_image(self, img):
         width, height = img.size
         max_width = 800
@@ -417,88 +489,94 @@ class SmartFarmLogic:
             return img.resize(new_size, Image.LANCZOS)
         return img
 
-    def calculate_plant_size(self, image_path, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
-        # 이미지 읽기
-        image = cv2.imread(image_path)
-        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    def calculate_plant_size_from_image(self, img, known_distance, known_width, image_width_pixels, mask_output_path, focal_length_mm):
+        try:
+            image_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # 초록색 범위 정의 (HSV)
-        lower_green = np.array([35, 40, 40])
-        upper_green = np.array([85, 255, 255])
+            # 초록색 범위 정의 (HSV)
+            lower_green = np.array([35, 40, 40])
+            upper_green = np.array([85, 255, 255])
 
-        # 초록색 마스크 생성
-        green_mask = cv2.inRange(image_hsv, lower_green, upper_green)
+            # 초록색 마스크 생성
+            green_mask = cv2.inRange(image_hsv, lower_green, upper_green)
 
-        # 마스크 이미지 저장
-        cv2.imwrite(mask_output_path, green_mask)
+            # 마스크 이미지 저장 (필요 시)
+            cv2.imwrite(mask_output_path, green_mask)
 
-        # 윤곽선 찾기
-        contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # 윤곽선 찾기
+            contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        if contours:
-            # 가장 큰 윤곽선 선택
-            largest_contour = max(contours, key=cv2.contourArea)
+            if contours:
+                # 가장 큰 윤곽선 선택
+                largest_contour = max(contours, key=cv2.contourArea)
 
-            # 외접 직사각형 찾기
-            x, y, w, h = cv2.boundingRect(largest_contour)
+                # 외접 직사각형 찾기
+                x, y, w, h = cv2.boundingRect(largest_contour)
 
-            # 센서 크기 (예: 6.4mm x 4.8mm)
-            sensor_width_mm = 6.4
+                # 센서 크기 (예: 6.4mm x 4.8mm)
+                sensor_width_mm = 6.4
 
-            # 센서 크기와 이미지 해상도를 사용하여 픽셀 당 mm 계산
-            pixel_size_mm = sensor_width_mm / image_width_pixels
+                # 센서 크기와 이미지 해상도를 사용하여 픽셀 당 mm 계산
+                pixel_size_mm = sensor_width_mm / image_width_pixels
 
-            # 초점 거리, 센서 크기, 거리로 픽셀 당 cm 계산
-            pixel_per_cm = (known_width * focal_length_mm) / (known_distance * pixel_size_mm)
+                # 초점 거리, 센서 크기, 거리로 픽셀 당 cm 계산
+                pixel_per_cm = (known_width * focal_length_mm) / (known_distance * pixel_size_mm)
 
-            width_in_cm = w / pixel_per_cm
-            height_in_cm = h / pixel_per_cm
+                width_in_cm = w / pixel_per_cm
+                height_in_cm = h / pixel_per_cm
 
-            return width_in_cm, height_in_cm
-        else:
+                return width_in_cm, height_in_cm
+            else:
+                return None, None
+        except Exception as e:
+            logging.error(f"calculate_plant_size_from_image error: {e}")
             return None, None
 
-    def calculate_green_coverage(self, image_path):
-        # 이미지 읽기
-        image = cv2.imread(image_path)
-        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    def calculate_green_coverage_from_image(self, img):
+        try:
+            image_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # 초록색 범위 정의 (HSV)
-        lower_green = np.array([35, 40, 40])
-        upper_green = np.array([85, 255, 255])
+            # 초록색 범위 정의 (HSV)
+            lower_green = np.array([35, 40, 40])
+            upper_green = np.array([85, 255, 255])
 
-        # 초록색 마스크 생성
-        green_mask = cv2.inRange(image_hsv, lower_green, upper_green)
+            # 초록색 마스크 생성
+            green_mask = cv2.inRange(image_hsv, lower_green, upper_green)
 
-        # 초록색 픽셀 수 계산
-        green_pixels = cv2.countNonZero(green_mask)
+            # 초록색 픽셀 수 계산
+            green_pixels = cv2.countNonZero(green_mask)
 
-        # 전체 픽셀 수 계산
-        total_pixels = image.shape[0] * image.shape[1]
+            # 전체 픽셀 수 계산
+            total_pixels = img.shape[0] * img.shape[1]
 
-        # 초록색 피복 비율 계산
-        cci = green_pixels / total_pixels
+            # 초록색 피복 비율 계산
+            cci = green_pixels / total_pixels
 
-        return cci
+            return cci
+        except Exception as e:
+            logging.error(f"calculate_green_coverage_from_image error: {e}")
+            return None
 
-    def calculate_vegetation_index(self, image_path):
-        # 이미지 읽기
-        image = cv2.imread(image_path)
-        # 소수점 제한 (오버플로우 방지)
-        image_float = image.astype(np.float32)
+    def calculate_vegetation_index_from_image(self, img):
+        try:
+            # 소수점 제한 (오버플로우 방지)
+            image_float = img.astype(np.float32)
 
-        # RGB 채널 분리
-        R = image_float[:, :, 2]
-        G = image_float[:, :, 1]
-        B = image_float[:, :, 0]
+            # RGB 채널 분리
+            R = image_float[:, :, 2]
+            G = image_float[:, :, 1]
+            B = image_float[:, :, 0]
 
-        # ExG (Excess Green) 계산
-        exg = 2 * G - R - B
+            # ExG (Excess Green) 계산
+            exg = 2 * G - R - B
 
-        # ExG의 평균 계산 (식생지수)
-        vegetation_index = np.mean(exg)
+            # ExG의 평균 계산 (식생지수)
+            vegetation_index = np.mean(exg)
 
-        return vegetation_index
+            return vegetation_index
+        except Exception as e:
+            logging.error(f"calculate_vegetation_index_from_image error: {e}")
+            return None
 
     def store_growth_data(self, width, height, cci, vegetation_index, result_class, disease):
         """
