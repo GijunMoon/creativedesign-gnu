@@ -5,3 +5,12 @@
 
 ![image](https://github.com/user-attachments/assets/0d00bfe3-2043-49e0-bb06-dc05cb09bd24)
 
+필수 설치 라이브러리
+1. customtkinter
+2. tkinter
+3. PIL
+4. openCV
+5. ultralytics
+6. sqlite3
+7. sklearn
+8. matplotlib
